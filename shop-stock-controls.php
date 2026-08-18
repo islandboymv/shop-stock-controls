@@ -6,7 +6,7 @@
  *              every product at or below its low-stock threshold, and a per-order purchase limit
  *              (store-wide default, overridable per product). Self-updates from GitHub Releases.
  * Author:      Islandboy
- * Version:     0.1.0
+ * Version:     0.1.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * WC requires at least: 7.0
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SSC_VERSION', '0.1.0' );
+define( 'SSC_VERSION', '0.1.1' );
 define( 'SSC_TELEMETRY_URL', 'https://plugin-telemetry.islandboy.workers.dev/ping' );
 
 const SSC_MAX_QTY_META      = '_ssc_max_qty';
@@ -232,7 +232,13 @@ function ssc_render_reorder_widget() {
 	$list = ssc_get_reorder_list();
 
 	if ( ! $list ) {
-		echo '<p style="margin:8px 0;">✅ ' . esc_html__( 'All stocked items are above their reorder point.', 'shop-stock-controls' ) . '</p>';
+		global $wpdb;
+		$tracking = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->wc_product_meta_lookup} WHERE stock_quantity IS NOT NULL" );
+		if ( $tracking ) {
+			echo '<p style="margin:8px 0;">✅ ' . esc_html__( 'All stocked items are above their reorder point.', 'shop-stock-controls' ) . '</p>';
+		} else {
+			echo '<p style="margin:8px 0;">' . esc_html__( 'No products are tracking stock yet. Reorder alerts appear here once products have "Track stock quantity" enabled (Product data → Inventory) with a quantity set.', 'shop-stock-controls' ) . '</p>';
+		}
 		return;
 	}
 

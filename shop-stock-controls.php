@@ -6,7 +6,7 @@
  *              every product at or below its low-stock threshold, and a per-order purchase limit
  *              (store-wide default, overridable per product). Self-updates from GitHub Releases.
  * Author:      Islandboy
- * Version:     0.3.0
+ * Version:     0.3.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * WC requires at least: 7.0
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SSC_VERSION', '0.3.0' );
+define( 'SSC_VERSION', '0.3.1' );
 define( 'SSC_TELEMETRY_URL', 'https://plugin-telemetry.islandboy.workers.dev/ping' );
 
 const SSC_MAX_QTY_META      = '_ssc_max_qty';
@@ -463,16 +463,29 @@ add_action( 'wp_enqueue_scripts', function () {
 	wp_add_inline_style( 'ssc-limits', $css );
 
 	/*
-	 * Clamp any .qty input to its max attribute the moment it exceeds it
-	 * (typing included), in the CAPTURE phase — so by the time theme handlers
-	 * (Blocksy cart auto-update et al.) read the value, it is already legal.
-	 * Inputs we capped (.ssc-limited) also flash the per-order explanation.
+	 * All listeners run in the CAPTURE phase so they act before any theme
+	 * handler (Blocksy et al.) sees the event:
+	 *
+	 *   • A "+" stepper click on an input already at its cap is swallowed
+	 *     entirely. Blocksy's stepper keeps the value at max but still fires
+	 *     a change event, and with cart auto-update on, ANY change submits
+	 *     the cart form — a full page reload that changes nothing. Swallowing
+	 *     the click replaces that dead reload with the flashing explanation.
+	 *   • A typed value above the cap is clamped before theme handlers read
+	 *     it. If the clamped value is what the cart already holds, the no-op
+	 *     event is stopped too (same pointless-reload protection).
+	 *
+	 * Inputs capped by OUR limit (.ssc-limited, as opposed to stock) also
+	 * flash the "Maximum N per order." note.
 	 */
 	$msg = wp_json_encode( str_replace( '987654321', '%d', ssc_limit_note_text( 987654321 ) ) );
 	$js  = <<<JS
 (function () {
 	var MSG = {$msg};
 	function warn(input, max) {
+		if (!input.classList.contains('ssc-limited')) {
+			return; // capped by stock, not by the per-order limit — not our message
+		}
 		// Prefer flashing the static note already rendered near this input.
 		var scopes = ['form.cart', '.cart_item', 'tr', 'li'];
 		for (var i = 0; i < scopes.length; i++) {
@@ -491,6 +504,7 @@ add_action( 'wp_enqueue_scripts', function () {
 		if (!w) {
 			w = document.createElement('span');
 			w.className = 'ssc-qty-warn';
+			w.setAttribute('role', 'alert');
 			wrap.appendChild(w);
 		}
 		w.textContent = MSG.replace('%d', max);
@@ -498,15 +512,35 @@ add_action( 'wp_enqueue_scripts', function () {
 		clearTimeout(w._sscT);
 		w._sscT = setTimeout(function () { w.style.display = 'none'; }, 4000);
 	}
+	function maxOf(q) {
+		var m = parseFloat(q.getAttribute('max'));
+		return m && m > 0 ? m : 0;
+	}
+	document.addEventListener('click', function (e) {
+		var btn = e.target && e.target.closest ? e.target.closest('.ct-increase, .quantity .plus') : null;
+		if (!btn) return;
+		var wrap = btn.closest('.quantity') || btn.parentNode;
+		var q = wrap ? wrap.querySelector('input.qty') : null;
+		if (!q) return;
+		var max = maxOf(q);
+		if (max && (parseFloat(q.value) || 0) >= max) {
+			e.preventDefault();
+			e.stopPropagation();
+			warn(q, max);
+		}
+	}, true);
 	function clamp(e) {
 		var q = e.target;
 		if (!q.classList || !q.classList.contains('qty')) return;
-		var max = parseFloat(q.getAttribute('max'));
-		if (!max || max <= 0) return;
+		var max = maxOf(q);
+		if (!max) return;
 		var v = parseFloat(q.value);
 		if (isNaN(v) || v <= max) return;
 		q.value = max;
-		if (q.classList.contains('ssc-limited')) warn(q, max);
+		warn(q, max);
+		if (parseFloat(q.defaultValue) === max) {
+			e.stopPropagation(); // clamped back to what the cart already holds
+		}
 	}
 	document.addEventListener('input', clamp, true);
 	document.addEventListener('change', clamp, true);

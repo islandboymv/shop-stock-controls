@@ -6,7 +6,7 @@
  *              every product at or below its low-stock threshold, and a per-order purchase limit
  *              (store-wide default, overridable per product). Self-updates from GitHub Releases.
  * Author:      Islandboy
- * Version:     0.3.2
+ * Version:     0.3.3
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * WC requires at least: 7.0
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SSC_VERSION', '0.3.2' );
+define( 'SSC_VERSION', '0.3.3' );
 define( 'SSC_TELEMETRY_URL', 'https://plugin-telemetry.islandboy.workers.dev/ping' );
 
 const SSC_MAX_QTY_META      = '_ssc_max_qty';
@@ -499,17 +499,27 @@ add_action( 'wp_enqueue_scripts', function () {
 			}
 		}
 		// No static note in sight (e.g. mini-cart drawer): show a temporary one.
-		// As a SIBLING after the quantity pill, never inside it — Blocksy's
-		// .quantity is a fixed-size rounded box that clips anything extra.
-		var wrap = input.closest('.quantity') || input.parentNode;
-		var w = wrap.nextElementSibling && wrap.nextElementSibling.classList.contains('ssc-qty-warn')
-			? wrap.nextElementSibling
+		// Never inside .quantity (a fixed-size rounded box that clips), and
+		// never inside a nowrap flex row either — in Blocksy's drawer the pill
+		// sits in .ct-product-actions (quantity × price), and a span injected
+		// there squeezes the row instead of wrapping. Anchor below the nearest
+		// such row so the warning flows as its own full-width line.
+		var anchor = input.closest('.quantity') || input.parentNode;
+		var p = anchor.parentElement;
+		if (p) {
+			var ps = getComputedStyle(p);
+			if (ps.display.indexOf('flex') !== -1 && ps.flexWrap === 'nowrap') {
+				anchor = p;
+			}
+		}
+		var w = anchor.nextElementSibling && anchor.nextElementSibling.classList.contains('ssc-qty-warn')
+			? anchor.nextElementSibling
 			: null;
 		if (!w) {
 			w = document.createElement('span');
 			w.className = 'ssc-qty-warn';
 			w.setAttribute('role', 'alert');
-			wrap.insertAdjacentElement('afterend', w);
+			anchor.insertAdjacentElement('afterend', w);
 		}
 		w.textContent = MSG.replace('%d', max);
 		w.style.display = 'block';

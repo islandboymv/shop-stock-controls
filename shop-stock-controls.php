@@ -6,7 +6,7 @@
  *              every product at or below its low-stock threshold, and a per-order purchase limit
  *              (store-wide default, overridable per product). Self-updates from GitHub Releases.
  * Author:      Islandboy
- * Version:     0.1.1
+ * Version:     0.2.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * WC requires at least: 7.0
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SSC_VERSION', '0.1.1' );
+define( 'SSC_VERSION', '0.2.0' );
 define( 'SSC_TELEMETRY_URL', 'https://plugin-telemetry.islandboy.workers.dev/ping' );
 
 const SSC_MAX_QTY_META      = '_ssc_max_qty';
@@ -205,8 +205,16 @@ function ssc_flush_reorder_cache() {
 	delete_transient( SSC_REORDER_TRANSIENT );
 }
 
+/**
+ * Who sees the widget: store managers, plus anyone explicitly granted the
+ * ssc_view_reorder_alerts capability (the Shop Staff role, for instance).
+ */
+function ssc_user_can_view_widget() {
+	return current_user_can( 'manage_woocommerce' ) || current_user_can( 'ssc_view_reorder_alerts' );
+}
+
 add_action( 'wp_dashboard_setup', function () {
-	if ( ! current_user_can( 'manage_woocommerce' ) ) {
+	if ( ! ssc_user_can_view_widget() ) {
 		return;
 	}
 
@@ -255,10 +263,11 @@ function ssc_render_reorder_widget() {
 		</thead>
 		<tbody>
 		<?php foreach ( $shown as $item ) :
-			$edit_id = $item['parent'] ? $item['parent'] : $item['id'];
+			$edit_id  = $item['parent'] ? $item['parent'] : $item['id'];
+			$edit_url = current_user_can( 'edit_product', $edit_id ) ? get_edit_post_link( $edit_id ) : '';
 			?>
 			<tr>
-				<td><a href="<?php echo esc_url( get_edit_post_link( $edit_id ) ); ?>"><?php echo esc_html( $item['title'] ); ?></a></td>
+				<td><?php if ( $edit_url ) : ?><a href="<?php echo esc_url( $edit_url ); ?>"><?php echo esc_html( $item['title'] ); ?></a><?php else : ?><?php echo esc_html( $item['title'] ); ?><?php endif; ?></td>
 				<td><?php echo esc_html( $item['sku'] ?: '—' ); ?></td>
 				<td style="text-align:right;<?php echo $item['stock'] <= 0 ? 'color:#d63638;font-weight:600;' : ''; ?>"><?php echo esc_html( $item['stock'] ); ?></td>
 				<td style="text-align:right;"><?php echo esc_html( $item['threshold'] ); ?></td>
@@ -277,11 +286,13 @@ function ssc_render_reorder_widget() {
 			) )
 		);
 	}
-	printf(
-		'<p style="margin:10px 0 4px;"><a href="%s">%s</a></p>',
-		esc_url( admin_url( 'admin.php?page=wc-admin&path=%2Fanalytics%2Fstock&filter=lowstock' ) ),
-		esc_html__( 'Open the full stock report →', 'shop-stock-controls' )
-	);
+	if ( current_user_can( 'view_woocommerce_reports' ) ) {
+		printf(
+			'<p style="margin:10px 0 4px;"><a href="%s">%s</a></p>',
+			esc_url( admin_url( 'admin.php?page=wc-admin&path=%2Fanalytics%2Fstock&filter=lowstock' ) ),
+			esc_html__( 'Open the full stock report →', 'shop-stock-controls' )
+		);
+	}
 }
 
 /* ===========================================================================

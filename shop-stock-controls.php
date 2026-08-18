@@ -6,7 +6,7 @@
  *              every product at or below its low-stock threshold, and a per-order purchase limit
  *              (store-wide default, overridable per product). Self-updates from GitHub Releases.
  * Author:      Islandboy
- * Version:     0.2.0
+ * Version:     0.3.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * WC requires at least: 7.0
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SSC_VERSION', '0.2.0' );
+define( 'SSC_VERSION', '0.3.0' );
 define( 'SSC_TELEMETRY_URL', 'https://plugin-telemetry.islandboy.workers.dev/ping' );
 
 const SSC_MAX_QTY_META      = '_ssc_max_qty';
@@ -398,14 +398,124 @@ add_action( 'woocommerce_check_cart_items', function () {
 	}
 } );
 
-/** Cap the quantity selector on product and cart pages. */
+/**
+ * Cap the quantity selector on product and cart pages. When OUR limit is the
+ * binding constraint (not stock), tag the input with .ssc-limited so the
+ * front-end script can explain the cap instead of letting it fail silently.
+ */
 add_filter( 'woocommerce_quantity_input_args', function ( $args, $product ) {
 	$limit = ssc_max_qty_for( ssc_parent_id( $product ) );
 	if ( $limit > 0 && ( $args['max_value'] <= 0 || $args['max_value'] > $limit ) ) {
 		$args['max_value'] = $limit;
+		$args['classes']   = array_merge( isset( $args['classes'] ) ? (array) $args['classes'] : array( 'input-text', 'qty', 'text' ), array( 'ssc-limited' ) );
 	}
 	return $args;
 }, 10, 2 );
+
+/* ---------------------------------------------------------------------------
+ * Front-end messaging.
+ *
+ * Enforcement alone is invisible: quantity steppers just stop at the cap, and
+ * AJAX carts (Blocksy auto-update, mini-cart) swallow the rejection notice.
+ * So the limit is also *communicated*:
+ *   1. a note under the Add to Cart button on the product page,
+ *   2. a note under each capped line item on the cart page,
+ *   3. a script that clamps typed-in quantities to the cap and flashes a
+ *      warning next to the field, so nothing is ever silently ignored.
+ * ------------------------------------------------------------------------- */
+
+/** Short human wording of the cap, shared by the notes and the script. */
+function ssc_limit_note_text( $limit ) {
+	return sprintf(
+		/* translators: %d: quantity limit */
+		__( 'Maximum %d per order.', 'shop-stock-controls' ),
+		$limit
+	);
+}
+
+/** Product page: state the limit up front, right under the Add to Cart button. */
+add_action( 'woocommerce_after_add_to_cart_button', function () {
+	global $product;
+	$limit = ssc_max_qty_for( ssc_parent_id( $product ) );
+	if ( $limit > 0 ) {
+		echo '<p class="ssc-limit-note">' . esc_html( ssc_limit_note_text( $limit ) ) . '</p>';
+	}
+} );
+
+/** Cart page: repeat the limit under each line item it applies to. */
+add_action( 'woocommerce_after_cart_item_name', function ( $cart_item ) {
+	$limit = ssc_max_qty_for( (int) $cart_item['product_id'] );
+	if ( $limit > 0 ) {
+		echo '<div class="ssc-limit-note">' . esc_html( ssc_limit_note_text( $limit ) ) . '</div>';
+	}
+} );
+
+add_action( 'wp_enqueue_scripts', function () {
+	if ( is_admin() ) {
+		return;
+	}
+
+	$css = '.ssc-limit-note{display:block;font-size:.85em;opacity:.72;margin:.5em 0 0;flex-basis:100%;transition:color .2s,opacity .2s;}'
+		. '.ssc-limit-note.ssc-flash{color:#d63638;opacity:1;font-weight:600;}'
+		. '.ssc-qty-warn{display:none;font-size:.8em;color:#d63638;margin-top:4px;flex-basis:100%;}';
+	wp_register_style( 'ssc-limits', false, array(), SSC_VERSION );
+	wp_enqueue_style( 'ssc-limits' );
+	wp_add_inline_style( 'ssc-limits', $css );
+
+	/*
+	 * Clamp any .qty input to its max attribute the moment it exceeds it
+	 * (typing included), in the CAPTURE phase — so by the time theme handlers
+	 * (Blocksy cart auto-update et al.) read the value, it is already legal.
+	 * Inputs we capped (.ssc-limited) also flash the per-order explanation.
+	 */
+	$msg = wp_json_encode( str_replace( '987654321', '%d', ssc_limit_note_text( 987654321 ) ) );
+	$js  = <<<JS
+(function () {
+	var MSG = {$msg};
+	function warn(input, max) {
+		// Prefer flashing the static note already rendered near this input.
+		var scopes = ['form.cart', '.cart_item', 'tr', 'li'];
+		for (var i = 0; i < scopes.length; i++) {
+			var scope = input.closest(scopes[i]);
+			var note = scope && scope.querySelector('.ssc-limit-note');
+			if (note) {
+				note.classList.add('ssc-flash');
+				clearTimeout(note._sscT);
+				note._sscT = setTimeout(function () { note.classList.remove('ssc-flash'); }, 2500);
+				return;
+			}
+		}
+		// No static note in sight (e.g. mini-cart drawer): show a temporary one.
+		var wrap = input.closest('.quantity') || input.parentNode;
+		var w = wrap.querySelector('.ssc-qty-warn');
+		if (!w) {
+			w = document.createElement('span');
+			w.className = 'ssc-qty-warn';
+			wrap.appendChild(w);
+		}
+		w.textContent = MSG.replace('%d', max);
+		w.style.display = 'block';
+		clearTimeout(w._sscT);
+		w._sscT = setTimeout(function () { w.style.display = 'none'; }, 4000);
+	}
+	function clamp(e) {
+		var q = e.target;
+		if (!q.classList || !q.classList.contains('qty')) return;
+		var max = parseFloat(q.getAttribute('max'));
+		if (!max || max <= 0) return;
+		var v = parseFloat(q.value);
+		if (isNaN(v) || v <= max) return;
+		q.value = max;
+		if (q.classList.contains('ssc-limited')) warn(q, max);
+	}
+	document.addEventListener('input', clamp, true);
+	document.addEventListener('change', clamp, true);
+})();
+JS;
+	wp_register_script( 'ssc-limits', false, array(), SSC_VERSION, true );
+	wp_enqueue_script( 'ssc-limits' );
+	wp_add_inline_script( 'ssc-limits', $js );
+} );
 
 /** Cap the quantity selector for each variation of a variable product. */
 add_filter( 'woocommerce_available_variation', function ( $data, $variable, $variation ) {
